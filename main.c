@@ -26,6 +26,7 @@ struct gbm_bo {
     uint32_t flags;
     buffer_handle_t handle;
     int stride;
+    void* userData;
 };
 
 static int get_hal_pixel_format(uint32_t gbm_format)
@@ -101,7 +102,7 @@ struct gbm_bo* gbm_bo_create(struct gbm_device* device, uint32_t width, uint32_t
     bo->height = height;
     bo->format = format;
     bo->flags = flags;
-
+    bo->userData=0;
     int usage = 0;
 
     if (flags & GBM_BO_USE_SCANOUT)
@@ -137,6 +138,16 @@ struct gbm_bo *gbm_bo_create_with_modifiers(struct gbm_device *gbm,
    return gbm_bo_create(gbm, width, height, format, 0);
 }
 
+struct gbm_bo * gbm_bo_create_with_modifiers2(struct gbm_device *gbm, uint32_t width, uint32_t height, uint32_t format, const uint64_t *modifiers, const unsigned int count, uint32_t flags){
+    printf("[libgbm-hybris] gbm_bo_create_with_modifiers2\n");
+    return NULL;
+}
+
+struct gbm_bo *gbm_bo_import(struct gbm_device *gbm, uint32_t type, void *buffer, uint32_t usage){
+   printf("[libgbm-hybris] gbm_bo_import called\n");
+   return NULL;
+}
+
 void gbm_bo_destroy(struct gbm_bo* bo) {
     printf("[libgbm-hybris] gbm_bo_destroy called\n");
     if (bo) {
@@ -156,12 +167,12 @@ uint32_t gbm_bo_get_height(struct gbm_bo* bo) {
 
 uint32_t gbm_bo_get_format(struct gbm_bo* bo) {
     printf("[libgbm-hybris] gbm_bo_get_format called\n");
-    return 0; // Dummy format
+    return bo ? (uint32_t)(bo->format) : 0;
 }
 
 uint32_t gbm_bo_get_stride(struct gbm_bo* bo) {
     printf("[libgbm-hybris] gbm_bo_get_stride called\n");
-    return 0;
+    return bo ? (uint32_t)(bo->stride) : 0;;
 }
 
 uint32_t gbm_bo_get_stride_for_plane(struct gbm_bo *bo, int plane)
@@ -183,13 +194,18 @@ void* gbm_bo_map(struct gbm_bo *bo, uint32_t x, uint32_t y, uint32_t width, uint
     return malloc(width * height * 4);
 }
 
+void gbm_surface_destroy(struct gbm_surface *surf) {
+    printf("[libgbm-hybris] gbm_surface_destroy called\n");
+}
+
+
 struct gbm_bo* gbm_surface_lock_front_buffer(struct gbm_surface* surface) {
     printf("[libgbm-hybris] gbm_surface_lock_front_buffer called\n");
     return (struct gbm_bo*)malloc(sizeof(struct gbm_bo));
 }
 
 int gbm_device_get_fd(struct gbm_device* device) {
-    printf("[libgbm-hybris] gbm_device_get_fd called\n");
+    printf("[libgbm-hybris] gbm_device_get_fd called device dummy is: %d\n", device->dummy);
     return device ? device->dummy : -1;
 }
 
@@ -210,7 +226,7 @@ void gbm_surface_release_buffer(struct gbm_surface* surface, struct gbm_bo* bo) 
 
 void* gbm_bo_get_user_data(struct gbm_bo* bo) {
     printf("[libgbm-hybris] gbm_bo_get_user_data called\n");
-    return bo ? (void*)bo : NULL;
+    return bo ? (void*)bo->userData : NULL;
 }
 
 int gbm_bo_get_fd(struct gbm_bo* bo) {
@@ -263,14 +279,22 @@ uint32_t gbm_bo_get_offset(struct gbm_bo *bo, int plane)
 
 struct gbm_device* gbm_bo_get_device(struct gbm_bo* bo) {
     printf("[libgbm-hybris] gbm_bo_get_device called\n");
-    return bo ? (struct gbm_device*)bo : NULL;
+    return bo ? bo->device : NULL;
 }
 
 void gbm_bo_set_user_data(struct gbm_bo *bo, void *data, void (*destroy_user_data)(struct gbm_bo *, void *)){
     printf("[libgbm-hybris] gbm_bo_set_user_data called\n");
- //   if (destroy_user_data) {
- //       destroy_user_data(user_data);
- //   }
+    bo->userData = data;
+}
+
+struct gbm_surface *gbm_surface_create_with_modifiers(struct gbm_device *gbm, uint32_t width, uint32_t height, uint32_t format, const uint64_t *modifiers, const unsigned int count){
+   printf("[libgbm-hybris] gbm_surface_create_with_modifiers\n");
+   if ((count && !modifiers) || (modifiers && !count)) {
+      errno = EINVAL;
+      return NULL;
+   }
+
+   return NULL;
 }
 
 struct gbm_surface *gbm_surface_create(struct gbm_device *gbm, uint32_t width, uint32_t height, uint32_t format, uint32_t flags) {
