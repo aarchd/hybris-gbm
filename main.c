@@ -7,27 +7,27 @@
 #include <linux/memfd.h>
 
 #include <gbm.h>
+#include "gbm_backend_abi.h"
 
 #include <hybris/gralloc/gralloc.h>
 
 #include <hardware/gralloc.h>
 
+#include <assert.h>
+
+struct gbm_hybris_bo {
+   struct gbm_bo base;
+   buffer_handle_t handle;
+};
+
+static const struct gbm_core *core;
+
 int memfd_create(const char *name, unsigned int flags);
 
-struct gbm_device {
-    int dummy;
-};
-
-struct gbm_bo {
-    struct gbm_device *device;
-    uint32_t width;
-    uint32_t height;
-    uint32_t format;
-    uint32_t flags;
-    buffer_handle_t handle;
-    int stride;
-    void* userData;
-};
+struct gbm_hybris_bo *gbm_hybris_bo(struct gbm_bo *bo)
+{
+   return (struct gbm_hybris_bo *) bo;
+}
 
 static int get_hal_pixel_format(uint32_t gbm_format)
 {
@@ -67,42 +67,32 @@ static int get_hal_pixel_format(uint32_t gbm_format)
     return format;
 }
 
-struct gbm_device* gbm_create_device(int fd) {
-    printf("[libgbm-hybris] gbm_create_device called with fd: %d\n", fd);
-    struct gbm_device* device = (struct gbm_device*)malloc(sizeof(struct gbm_device));
-    if (device) {
-        device->dummy = fd;
-    }
-    hybris_gralloc_initialize(0);
-    return device;
-}
-
-void gbm_device_destroy(struct gbm_device* device) {
-    printf("[libgbm-hybris] gbm_device_destroy called\n");
-    if (device) {
-        free(device);
-    }
-}
-
-struct gbm_bo* gbm_bo_create(struct gbm_device* device, uint32_t width, uint32_t height, uint32_t format, uint32_t flags) {
+struct gbm_bo* hybris_gbm_bo_create(struct gbm_device* device, uint32_t width, uint32_t height, uint32_t format, uint32_t flags, const uint64_t *modifiers, const unsigned int count) {
     printf("[libgbm-hybris1] gbm_bo_create called with width: %u, height: %u, format: %u, flags: %u\n", width, height, format, flags);
     if (!device) {
         fprintf(stderr, "[libgbm-hybris] Invalid GBM device.\n");
         return NULL;
     }
 
-    struct gbm_bo *bo = (struct gbm_bo*)malloc(sizeof(struct gbm_bo));
+    struct gbm_hybris_bo *bo;
+    // Malloc dont work for unknown reason
+    bo = calloc(1, sizeof(gbm_hybris_bo));
+    // Not inited in libgbm?
+    bo->base.v0.user_data = NULL;
+
     if (!bo) {
         fprintf(stderr, "[libgbm-hybris] Failed to allocate memory for GBM buffer object.\n");
         return NULL;
     }
 
-    bo->device = device;
-    bo->width = width;
-    bo->height = height;
-    bo->format = format;
-    bo->flags = flags;
-    bo->userData=0;
+    format = core->v0.format_canonicalize(format);
+
+    bo->base.gbm = device;
+
+    bo->base.v0.width = width;
+    bo->base.v0.height = height;
+    bo->base.v0.format = format;
+
     int usage = 0;
 
     if (flags & GBM_BO_USE_SCANOUT)
@@ -123,12 +113,12 @@ struct gbm_bo* gbm_bo_create(struct gbm_device* device, uint32_t width, uint32_t
     }
 
     bo->handle = handle;
-    bo->stride = stride;
+    bo->base.v0.stride = stride;
     fprintf(stderr, "[libgbm-hybris] Bo created\n");
-    return bo;
+    return &bo->base;
 }
 
-struct gbm_bo *gbm_bo_create_with_modifiers(struct gbm_device *gbm,
+struct gbm_bo *hybris_gbm_bo_create_with_modifiers(struct gbm_device *gbm,
                              uint32_t width, uint32_t height,
                              uint32_t format,
                              const uint64_t *modifiers,
@@ -138,103 +128,79 @@ struct gbm_bo *gbm_bo_create_with_modifiers(struct gbm_device *gbm,
    return gbm_bo_create(gbm, width, height, format, 0);
 }
 
-struct gbm_bo * gbm_bo_create_with_modifiers2(struct gbm_device *gbm, uint32_t width, uint32_t height, uint32_t format, const uint64_t *modifiers, const unsigned int count, uint32_t flags){
+struct gbm_bo * hybris_gbm_bo_create_with_modifiers2(struct gbm_device *gbm, uint32_t width, uint32_t height, uint32_t format, const uint64_t *modifiers, const unsigned int count, uint32_t flags){
+//TBD
     printf("[libgbm-hybris] gbm_bo_create_with_modifiers2\n");
     return NULL;
 }
 
-struct gbm_bo *gbm_bo_import(struct gbm_device *gbm, uint32_t type, void *buffer, uint32_t usage){
+struct gbm_bo *hybris_gbm_bo_import(struct gbm_device *gbm, uint32_t type, void *buffer, uint32_t usage){
+// How do that even work with fake dma buf's?
    printf("[libgbm-hybris] gbm_bo_import called\n");
    return NULL;
 }
 
-void gbm_bo_destroy(struct gbm_bo* bo) {
-    printf("[libgbm-hybris] gbm_bo_destroy called\n");
-    if (bo) {
-        free(bo);
-    }
-}
-
-uint32_t gbm_bo_get_width(struct gbm_bo* bo) {
-    printf("[libgbm-hybris] gbm_bo_get_width called\n");
-    return bo ? (uint32_t)(bo->width) : 0;
-}
-
-uint32_t gbm_bo_get_height(struct gbm_bo* bo) {
-    printf("[libgbm-hybris] gbm_bo_get_height called\n");
-    return bo ? (uint32_t)(bo->height) : 0;
-}
-
-uint32_t gbm_bo_get_format(struct gbm_bo* bo) {
-    printf("[libgbm-hybris] gbm_bo_get_format called\n");
-    return bo ? (uint32_t)(bo->format) : 0;
-}
-
-uint32_t gbm_bo_get_stride(struct gbm_bo* bo) {
+// Suprisingly not part of libgbm
+uint32_t hybris_gbm_bo_get_stride(struct gbm_bo* bo, int plane) {
     printf("[libgbm-hybris] gbm_bo_get_stride called\n");
-    return bo ? (uint32_t)(bo->stride) : 0;;
+    return bo ? (uint32_t)(bo->v0.stride) : 0;
 }
 
-uint32_t gbm_bo_get_stride_for_plane(struct gbm_bo *bo, int plane)
+uint32_t hybris_gbm_bo_get_stride_for_plane(struct gbm_bo *bo, int plane)
 {
+//TBD
    printf("[libgbm-hybris] gbm_bo_get_stride_for_plane called\n");
    return 0;
 }
 
-uint64_t gbm_bo_get_modifier(struct gbm_bo* bo) {
+uint64_t hybris_gbm_bo_get_modifier(struct gbm_bo* bo) {
+//TBD: Implement modifier
     printf("[libgbm-hybris] gbm_bo_get_modifier called\n");
     return 0;
 }
 
-void* gbm_bo_map(struct gbm_bo *bo, uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint32_t flags, uint32_t *stride, void **map_data) {
+void* hybris_gbm_bo_map(struct gbm_bo *bo, uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint32_t flags, uint32_t *stride, void **map_data) {
+//TBD: Implement based on grlloc lock
     printf("[libgbm-hybris] gbm_bo_map called with x: %u, y: %u, width: %u, height: %u, flags: %u\n", x, y, width, height, flags);
-    if (stride) {
-        *stride = width * 4;
-    }
-    return malloc(width * height * 4);
+    return NULL;
 }
 
-void gbm_surface_destroy(struct gbm_surface *surf) {
+void hybris_gbm_surface_destroy(struct gbm_surface *surf) {
+//TBD: Implement surfaces
     printf("[libgbm-hybris] gbm_surface_destroy called\n");
 }
 
 
-struct gbm_bo* gbm_surface_lock_front_buffer(struct gbm_surface* surface) {
+struct gbm_bo* hybris_gbm_surface_lock_front_buffer(struct gbm_surface* surface) {
+//TBD: Implement surfaces
     printf("[libgbm-hybris] gbm_surface_lock_front_buffer called\n");
     return (struct gbm_bo*)malloc(sizeof(struct gbm_bo));
 }
 
-int gbm_device_get_fd(struct gbm_device* device) {
-    printf("[libgbm-hybris] gbm_device_get_fd called device dummy is: %d\n", device->dummy);
-    return device ? device->dummy : -1;
-}
-
-union gbm_bo_handle gbm_bo_get_handle(struct gbm_bo* bo) {
-    printf("[libgbm-hybris] gbm_bo_get_handle called\n");
-    union gbm_bo_handle ret = {
-        .ptr = 0
-    };
-    return ret;
-}
-
-void gbm_surface_release_buffer(struct gbm_surface* surface, struct gbm_bo* bo) {
+void hybris_gbm_surface_release_buffer(struct gbm_surface* surface, struct gbm_bo* bo) {
+//TBD: Implement surfaces
     printf("[libgbm-hybris] gbm_surface_release_buffer called\n");
     if (bo) {
         free(bo);
     }
 }
 
-void* gbm_bo_get_user_data(struct gbm_bo* bo) {
-    printf("[libgbm-hybris] gbm_bo_get_user_data called\n");
-    return bo ? (void*)bo->userData : NULL;
-}
-
-int gbm_bo_get_fd(struct gbm_bo* bo) {
-    if(!bo || !bo->handle) {
-        printf("[libgbm-hybris] gbm_bo_get_fd missing bo or bo->handle\n");
+int hybris_gbm_bo_get_fd(struct gbm_bo* _bo) {
+    if(!_bo) {
+        printf("[libgbm-hybris] gbm_bo_get_fd missing bo\n");
         return -1;
     }
 
+    struct gbm_hybris_bo *bo = gbm_hybris_bo(_bo);
+    if(!bo || !bo->handle) {
+        printf("[libgbm-hybris] gbm_bo_get_fd missing bo->handle\n");
+        return -1;
+    }
+
+    if(!bo->handle) {
+        printf("[libgbm-hybris] missing handle\n");
+        return -1;
+    }
     printf("[libgbm-hybris] gbm_bo_get_fd called version: %d numFds: %d numInts: %d\n", bo->handle->version, bo->handle->numFds, bo->handle->numInts);
 
     int fd = memfd_create("whatever", MFD_CLOEXEC);
@@ -259,35 +225,29 @@ int gbm_bo_get_fd(struct gbm_bo* bo) {
    return fd;
 }
 
-int gbm_bo_get_plane_count(struct gbm_bo *bo)
+int hybris_gbm_bo_get_plane_count(struct gbm_bo *bo)
 {
+//TBD and rename to bo_get_planes
    printf("[libgbm-hybris] gbm_bo_get_plane_count called\n");
    return 0;
 }
 
-int gbm_bo_get_fd_for_plane(struct gbm_bo *bo, int plane)
+int hybris_gbm_bo_get_fd_for_plane(struct gbm_bo *bo, int plane)
 {
+//TBD and rename to bo_get_plane_fd
    printf("[libgbm-hybris] gbm_bo_get_fd_for_plane called\n");
    return 0;
 }
 
-uint32_t gbm_bo_get_offset(struct gbm_bo *bo, int plane)
+uint32_t hybris_gbm_bo_get_offset(struct gbm_bo *bo, int plane)
 {
+//TBD and rename bo_get_offset
    printf("[libgbm-hybris] gbm_bo_get_offset called\n");
    return 0;
 }
 
-struct gbm_device* gbm_bo_get_device(struct gbm_bo* bo) {
-    printf("[libgbm-hybris] gbm_bo_get_device called\n");
-    return bo ? bo->device : NULL;
-}
-
-void gbm_bo_set_user_data(struct gbm_bo *bo, void *data, void (*destroy_user_data)(struct gbm_bo *, void *)){
-    printf("[libgbm-hybris] gbm_bo_set_user_data called\n");
-    bo->userData = data;
-}
-
-struct gbm_surface *gbm_surface_create_with_modifiers(struct gbm_device *gbm, uint32_t width, uint32_t height, uint32_t format, const uint64_t *modifiers, const unsigned int count){
+struct gbm_surface *hybris_gbm_surface_create_with_modifiers(struct gbm_device *gbm, uint32_t width, uint32_t height, uint32_t format, const uint64_t *modifiers, const unsigned int count){
+//TBD: Implement surfaces
    printf("[libgbm-hybris] gbm_surface_create_with_modifiers\n");
    if ((count && !modifiers) || (modifiers && !count)) {
       errno = EINVAL;
@@ -297,20 +257,23 @@ struct gbm_surface *gbm_surface_create_with_modifiers(struct gbm_device *gbm, ui
    return NULL;
 }
 
-struct gbm_surface *gbm_surface_create(struct gbm_device *gbm, uint32_t width, uint32_t height, uint32_t format, uint32_t flags) {
+struct gbm_surface *hybris_gbm_surface_create(struct gbm_device *gbm, uint32_t width, uint32_t height, uint32_t format, uint32_t flags) {
+//TBD: Implement surfaces
     printf("[libgbm-hybris] gbm_surface_create called with width: %u, height: %u, format: %u, flags: %u\n", width, height, format, flags);
     return NULL;
 }
 
-void gbm_bo_unmap(struct gbm_bo* bo, void* map_data) {
+void hybris_gbm_bo_unmap(struct gbm_bo* bo, void* map_data) {
+//TBD: Implement using gralloc unlock
     printf("[libgbm-hybris] gbm_bo_unmap called\n");
     if (map_data) {
         free(map_data);
     }
 }
 
-char *gbm_format_get_name(uint32_t gbm_format, struct gbm_format_name_desc *desc)
+char *hybris_gbm_format_get_name(uint32_t gbm_format, struct gbm_format_name_desc *desc)
 {
+//TBD
    //gbm_format = gbm_format_canonicalize(gbm_format);
    printf("[libgbm-hybris] gbm_format_get_name called\n");
    desc->name[0] = 0;
@@ -321,3 +284,40 @@ char *gbm_format_get_name(uint32_t gbm_format, struct gbm_format_name_desc *desc
 
    return desc->name;
 }
+
+static struct gbm_device *hybris_device_create(int fd, uint32_t gbm_backend_version){
+    printf("[libgbm-hybris] hybris_device_create called\n");
+    struct gbm_device *device;
+
+    if (gbm_backend_version != GBM_BACKEND_ABI_VERSION) {
+        printf("Wrong gbm version, built for: %d current: %d\n", GBM_BACKEND_ABI_VERSION, gbm_backend_version);
+        return NULL;
+    }
+
+    device = calloc(1, sizeof *device);
+    if (!device)
+       return NULL;
+
+   device->v0.fd = fd;
+   device->v0.backend_version = gbm_backend_version;
+   device->v0.bo_create = hybris_gbm_bo_create;
+   device->v0.bo_get_fd = hybris_gbm_bo_get_fd;
+   device->v0.bo_get_stride = hybris_gbm_bo_get_stride;
+   device->v0.bo_get_modifier = hybris_gbm_bo_get_modifier;
+   device->v0.bo_get_planes = hybris_gbm_bo_get_plane_count;
+   return device;
+}
+
+struct gbm_backend gbm_hybris_backend = {
+   .v0.backend_version = GBM_BACKEND_ABI_VERSION,
+   .v0.backend_name = "hybris",
+   .v0.create_device = hybris_device_create,
+};
+
+struct gbm_backend * gbmint_get_backend(const struct gbm_core *gbm_core);
+
+struct gbm_backend *
+gbmint_get_backend(const struct gbm_core *gbm_core) {
+   core = gbm_core;
+   return &gbm_hybris_backend;
+};

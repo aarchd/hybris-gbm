@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.10)
 project(gbm-hybris VERSION 1.0 LANGUAGES C)
-set(LIBRARY_NAME gbm)
+set(LIBRARY_NAME gbm-hybris)
 set(SOURCE_FILES main.c)
 include_directories(/usr/include/android/)
 link_directories(/usr/lib/aarch64-linux-gnu)
