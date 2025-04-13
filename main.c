@@ -1,8 +1,14 @@
+#include <fcntl.h> 
+#include <xf86drm.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/ioctl.h>
+
+#include <malloc.h>
 
 #include <linux/memfd.h>
 
@@ -15,9 +21,33 @@
 
 #include <assert.h>
 
+#define DRM_EVDI_GBM_ADD_BUFF 0x05
+#define DRM_EVDI_GBM_DEL_BUFF 0x0B
+
+#define DRM_IOCTL_EVDI_GBM_DEL_BUFF DRM_IOWR(DRM_COMMAND_BASE +  \
+	DRM_EVDI_GBM_DEL_BUFF, struct drm_evdi_gbm_del_buff)
+
+#define DRM_IOCTL_EVDI_GBM_ADD_BUFF DRM_IOWR(0x40 +  \
+	DRM_EVDI_GBM_ADD_BUFF, struct drm_evdi_gbm_add_buf)
+
+struct drm_evdi_gbm_add_buf {
+	int fd;
+	int id;
+};
+
+struct drm_evdi_gbm_del_buff {
+	int id;
+};
+
 struct gbm_hybris_bo {
    struct gbm_bo base;
    buffer_handle_t handle;
+   int evdi_lindroid_buff_id;
+};
+
+struct gbm_hybris_surface {
+   void *reserved_for_egl_gbm;
+   struct gbm_surface base;
 };
 
 static const struct gbm_core *core;
@@ -68,15 +98,15 @@ static int get_hal_pixel_format(uint32_t gbm_format)
 }
 
 struct gbm_bo* hybris_gbm_bo_create(struct gbm_device* device, uint32_t width, uint32_t height, uint32_t format, uint32_t flags, const uint64_t *modifiers, const unsigned int count) {
-    printf("[libgbm-hybris1] gbm_bo_create called with width: %u, height: %u, format: %u, flags: %u\n", width, height, format, flags);
+//    printf("[libgbm-hybris] gbm_bo_create called with width: %u, height: %u, format: %u, flags: %u\n", width, height, format, flags);
     if (!device) {
         fprintf(stderr, "[libgbm-hybris] Invalid GBM device.\n");
         return NULL;
     }
 
     struct gbm_hybris_bo *bo;
-    // Malloc dont work for unknown reason
-    bo = calloc(1, sizeof(gbm_hybris_bo));
+    bo = calloc(1, sizeof(struct gbm_hybris_bo));
+
     // Not inited in libgbm?
     bo->base.v0.user_data = NULL;
 
@@ -105,18 +135,84 @@ struct gbm_bo* hybris_gbm_bo_create(struct gbm_device* device, uint32_t width, u
     int stride = 0;
     buffer_handle_t handle = NULL;
 
-    int ret = hybris_gralloc_allocate(width, height, get_hal_pixel_format(format), GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_RENDER | GRALLOC_USAGE_HW_COMPOSER, &handle, &stride);
+    int ret = hybris_gralloc_allocate(width, height, HAL_PIXEL_FORMAT_RGBA_8888, GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_RENDER | GRALLOC_USAGE_HW_COMPOSER, &handle, &stride);
     if (ret != 0) {
         fprintf(stderr, "[libgbm-hybris] hybris_gralloc_allocate failed: %d\n", ret);
         free(bo);
         return NULL;
     }
+    hybris_gralloc_import_buffer(handle, &bo->handle);
+//    bo->handle = handle;
+    native_handle_close(handle);
+//    native_handle_delete(handle);
 
-    bo->handle = handle;
     bo->base.v0.stride = stride;
-    fprintf(stderr, "[libgbm-hybris] Bo created\n");
+  //  fprintf(stderr, "[libgbm-hybris] Bo created and handle imported\n");
+
+    //printf("[libgbm-hybris] hybris_gbm_bo_create called version: %d numFds: %d numInts: %d\n", bo->handle->version, bo->handle->numFds, bo->handle->numInts);
+
+    int mem_fd = memfd_create("whatever", MFD_CLOEXEC);
+
+    if (mem_fd == -1) {
+        printf("[libgbm-hybris] memfd_create failed\n");
+        return NULL;
+    }
+    size_t handle_size = sizeof(native_handle_t) + sizeof(int) * (bo->handle->numFds + bo->handle->numInts);
+//    printf("[libgbm-hybris] fd: %d going to write %d bytes\n", mem_fd, handle_size);
+//    printf("[libgbm-hybris] data:");
+//    for(int i=0; i<bo->handle->numFds + bo->handle->numInts; i++) {
+//        printf(" %d ", bo->handle->data[i]);
+//    }
+//    printf("\n");
+    if(write(mem_fd, bo->handle, handle_size) != handle_size) {
+       printf("[libgbm-hybris] failed to write native_handle_t into mefd\n");
+       close(mem_fd);
+       return NULL;
+    }
+
+    struct drm_evdi_gbm_add_buf cmd;
+    cmd.fd = mem_fd;
+    cmd.id = -1;
+    ret = ioctl(device->v0.fd, DRM_IOCTL_EVDI_GBM_ADD_BUFF, &cmd);
+    close(mem_fd);
+    if(cmd.id==-1) {
+        printf("[libgbm-hybris] failed to get buffer id\n");
+        return NULL;
+    }
+//    printf("[libgbm-hybris] got buff id: %d\n", cmd.id);
+    bo->evdi_lindroid_buff_id = cmd.id;
+
     return &bo->base;
 }
+
+static void hybris_gbm_bo_destroy(struct gbm_bo *_bo)
+{
+    struct gbm_hybris_bo *bo = gbm_hybris_bo(_bo);
+    if (bo->handle) {
+        hybris_gralloc_release(bo->handle, 1);
+    struct drm_evdi_gbm_del_buff close_args = {
+        .id = bo->evdi_lindroid_buff_id
+    };
+
+    if (ioctl(bo->base.gbm->v0.fd, DRM_IOCTL_EVDI_GBM_DEL_BUFF, &close_args) < 0) {
+        perror("[libgbm-hybris] DRM_IOCTL_GEM_CLOSE failed");
+    } else {
+//        printf("[libgbm-hybris]  Released GEM buffer with handle %u\n",  bo->evdi_lindroid_buff_id);
+    }
+    native_handle_close(bo->handle);
+//    native_handle_delete(bo->handle);
+}
+    free(bo);
+}
+
+
+static void hybris_gbm_device_destroy(struct gbm_device *device)
+{
+    if(device->v0.fd)
+        close(device->v0.fd);
+    free(device);
+}
+
 
 struct gbm_bo *hybris_gbm_bo_create_with_modifiers(struct gbm_device *gbm,
                              uint32_t width, uint32_t height,
@@ -125,7 +221,7 @@ struct gbm_bo *hybris_gbm_bo_create_with_modifiers(struct gbm_device *gbm,
                              const unsigned int count)
 {
 //TBD: it do not work that way :D
-   return gbm_bo_create(gbm, width, height, format, 0);
+   return NULL;
 }
 
 struct gbm_bo * hybris_gbm_bo_create_with_modifiers2(struct gbm_device *gbm, uint32_t width, uint32_t height, uint32_t format, const uint64_t *modifiers, const unsigned int count, uint32_t flags){
@@ -142,7 +238,7 @@ struct gbm_bo *hybris_gbm_bo_import(struct gbm_device *gbm, uint32_t type, void 
 
 // Suprisingly not part of libgbm
 uint32_t hybris_gbm_bo_get_stride(struct gbm_bo* bo, int plane) {
-    printf("[libgbm-hybris] gbm_bo_get_stride called\n");
+//    printf("[libgbm-hybris] gbm_bo_get_stride called\n");
     return bo ? (uint32_t)(bo->v0.stride) : 0;
 }
 
@@ -155,7 +251,7 @@ uint32_t hybris_gbm_bo_get_stride_for_plane(struct gbm_bo *bo, int plane)
 
 uint64_t hybris_gbm_bo_get_modifier(struct gbm_bo* bo) {
 //TBD: Implement modifier
-    printf("[libgbm-hybris] gbm_bo_get_modifier called\n");
+//    printf("[libgbm-hybris] gbm_bo_get_modifier called\n");
     return 0;
 }
 
@@ -197,11 +293,11 @@ int hybris_gbm_bo_get_fd(struct gbm_bo* _bo) {
         return -1;
     }
 
-    if(!bo->handle) {
-        printf("[libgbm-hybris] missing handle\n");
+    if(bo->evdi_lindroid_buff_id == -1) {
+        printf("[libgbm-hybris] missing evdi_lindroid_buff_id\n");
         return -1;
     }
-    printf("[libgbm-hybris] gbm_bo_get_fd called version: %d numFds: %d numInts: %d\n", bo->handle->version, bo->handle->numFds, bo->handle->numInts);
+//    printf("[libgbm-hybris] gbm_bo_get_fd called version: %d numFds: %d numInts: %d\n", bo->handle->version, bo->handle->numFds, bo->handle->numInts);
 
     int fd = memfd_create("whatever", MFD_CLOEXEC);
 
@@ -209,15 +305,15 @@ int hybris_gbm_bo_get_fd(struct gbm_bo* _bo) {
         printf("[libgbm-hybris] memfd_create failed\n");
         return -1;
     }
-    size_t handle_size = sizeof(native_handle_t) + sizeof(int) * (bo->handle->numFds + bo->handle->numInts);
-    printf("[libgbm-hybris] fd: %d going to write %d bytes\n", fd, handle_size);
-    printf("[libgbm-hybris] data:");
-    for(int i=0; i<bo->handle->numFds + bo->handle->numInts; i++) {
-        printf(" %d ", bo->handle->data[i]);
-    }
-    printf("\n");
-    if(write(fd, bo->handle, handle_size) != handle_size) {
-       printf("[libgbm-hybris] failed to write native_handle_t into mefd\n");
+//    size_t handle_size = sizeof(native_handle_t) + sizeof(int) * (bo->handle->numFds + bo->handle->numInts);
+//    printf("[libgbm-hybris] fd: %d going to write %d bytes\n", fd, handle_size);
+//    printf("[libgbm-hybris] data:");
+//    for(int i=0; i<bo->handle->numFds + bo->handle->numInts; i++) {
+//        printf(" %d ", bo->handle->data[i]);
+//    }
+//    printf("\n");
+    if(write(fd, &bo->evdi_lindroid_buff_id, sizeof(int)) != sizeof(int)) {
+       printf("[libgbm-hybris] failed to write evdi_lindroid_buff_id into mefd\n");
        close(fd);
        return -1;
     }
@@ -228,8 +324,8 @@ int hybris_gbm_bo_get_fd(struct gbm_bo* _bo) {
 int hybris_gbm_bo_get_plane_count(struct gbm_bo *bo)
 {
 //TBD and rename to bo_get_planes
-   printf("[libgbm-hybris] gbm_bo_get_plane_count called\n");
-   return 0;
+//   printf("[libgbm-hybris] gbm_bo_get_plane_count called\n");
+   return 1;
 }
 
 int hybris_gbm_bo_get_fd_for_plane(struct gbm_bo *bo, int plane)
@@ -239,10 +335,9 @@ int hybris_gbm_bo_get_fd_for_plane(struct gbm_bo *bo, int plane)
    return 0;
 }
 
-uint32_t hybris_gbm_bo_get_offset(struct gbm_bo *bo, int plane)
+uint32_t hybris_bo_get_offset(struct gbm_bo *bo, int plane)
 {
-//TBD and rename bo_get_offset
-   printf("[libgbm-hybris] gbm_bo_get_offset called\n");
+//   printf("[libgbm-hybris] gbm_bo_get_offset called\n");
    return 0;
 }
 
@@ -257,15 +352,43 @@ struct gbm_surface *hybris_gbm_surface_create_with_modifiers(struct gbm_device *
    return NULL;
 }
 
-struct gbm_surface *hybris_gbm_surface_create(struct gbm_device *gbm, uint32_t width, uint32_t height, uint32_t format, uint32_t flags) {
+struct gbm_surface *hybris_gbm_surface_create(struct gbm_device *gbm, uint32_t width, uint32_t height, uint32_t format, uint32_t flags, const uint64_t *modifiers, const unsigned count) {
 //TBD: Implement surfaces
     printf("[libgbm-hybris] gbm_surface_create called with width: %u, height: %u, format: %u, flags: %u\n", width, height, format, flags);
-    return NULL;
+    struct gbm_hybris_surface *surf;
+    surf = calloc(1, sizeof *surf);
+    if (surf == NULL) {
+        errno = ENOMEM;
+        return NULL;
+    }
+
+    surf->base.gbm = gbm;
+    surf->base.v0.width = width;
+    surf->base.v0.height = height;
+    surf->base.v0.format = get_hal_pixel_format(format);
+    surf->base.v0.flags = flags;
+    surf->base.v0.modifiers = calloc(count, sizeof(*modifiers));
+    if (count && !surf->base.v0.modifiers) {
+        errno = ENOMEM;
+        free(surf);
+        return NULL;
+    }
+
+    //uint64_t *v0_modifiers = surf->base.v0.modifiers;
+    //for (int i = 0; i < count; i++) {
+        // compressed buffers don't render correctly when imported
+      //  if (modifiers[i] & ~DRM_FORMAT_MOD_NVIDIA_BLOCK_LINEAR_2D(0x0, 0x1, 0x3, 0xff, 0xf))
+      //      continue;
+      //  *v0_modifiers++ = modifiers[i];
+    //}
+    //surf->base.v0.count = v0_modifiers - surf->base.v0.modifiers;
+
+    return &surf->base;
 }
 
 void hybris_gbm_bo_unmap(struct gbm_bo* bo, void* map_data) {
 //TBD: Implement using gralloc unlock
-    printf("[libgbm-hybris] gbm_bo_unmap called\n");
+//    printf("[libgbm-hybris] gbm_bo_unmap called\n");
     if (map_data) {
         free(map_data);
     }
@@ -275,7 +398,7 @@ char *hybris_gbm_format_get_name(uint32_t gbm_format, struct gbm_format_name_des
 {
 //TBD
    //gbm_format = gbm_format_canonicalize(gbm_format);
-   printf("[libgbm-hybris] gbm_format_get_name called\n");
+//   printf("[libgbm-hybris] gbm_format_get_name called\n");
    desc->name[0] = 0;
    desc->name[1] = 0;
    desc->name[2] = 0;
@@ -286,7 +409,7 @@ char *hybris_gbm_format_get_name(uint32_t gbm_format, struct gbm_format_name_des
 }
 
 static struct gbm_device *hybris_device_create(int fd, uint32_t gbm_backend_version){
-    printf("[libgbm-hybris] hybris_device_create called\n");
+  //  printf("[libgbm-hybris] hybris_device_create called\n");
     struct gbm_device *device;
 
     if (gbm_backend_version != GBM_BACKEND_ABI_VERSION) {
@@ -301,10 +424,14 @@ static struct gbm_device *hybris_device_create(int fd, uint32_t gbm_backend_vers
    device->v0.fd = fd;
    device->v0.backend_version = gbm_backend_version;
    device->v0.bo_create = hybris_gbm_bo_create;
+   device->v0.bo_destroy = hybris_gbm_bo_destroy;
+   device->v0.destroy = hybris_gbm_device_destroy;
    device->v0.bo_get_fd = hybris_gbm_bo_get_fd;
    device->v0.bo_get_stride = hybris_gbm_bo_get_stride;
    device->v0.bo_get_modifier = hybris_gbm_bo_get_modifier;
    device->v0.bo_get_planes = hybris_gbm_bo_get_plane_count;
+   device->v0.surface_create = hybris_gbm_surface_create;
+   device->v0.bo_get_offset = hybris_bo_get_offset;
    return device;
 }
 
