@@ -1,11 +1,11 @@
-Source: libgm-hybris
+Source: libgbm-hybris
 Section: utils
 Priority: optional
 Maintainer: luka177 <lukapanio@gmail.com>
-Build-Depends: debhelper-compat (= 13), cmake, g++, libdrm-dev, libhybris-dev
+Build-Depends: debhelper-compat (= 13), cmake, g++, libdrm-dev, libhybris-dev, libgbm-dev
 Standards-Version: 4.6.2
 
-Package: libgm-hybris
+Package: libgbm-hybris
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends} libhybris
 Description: A libgm plugin to support libhybris
